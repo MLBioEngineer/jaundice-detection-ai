@@ -3,7 +3,7 @@ import io
 import joblib
 import numpy as np
 import pandas as pd
-from PIL import Image
+from PIL import Image, ImageOps
 import streamlit as st
 
 st.set_page_config(
@@ -16,13 +16,18 @@ st.set_page_config(
 # Custom Styling
 st.markdown("""
 <style>
-    /* Hide Streamlit default header, footer, and menu */
+    /* Hide Streamlit default branding and menu */
     #MainMenu {visibility: hidden; display: none !important;}
     footer {visibility: hidden; display: none !important;}
-    header {visibility: hidden; display: none !important;}
-    [data-testid="stHeader"] {display: none !important; visibility: hidden !important;}
-    [data-testid="stDecoration"] {display: none !important;}
-    #stDecoration {display: none !important;}
+    
+    /* Ensure the sidebar open/collapse toggle remains working */
+    [data-testid="collapsedControl"] {
+        display: block !important;
+        visibility: visible !important;
+        top: 10px !important;
+        left: 10px !important;
+        z-index: 999999 !important;
+    }
     
     /* Hide Streamlit Cloud GitHub profile badge, avatar & manage app button */
     .stDeployButton {display: none !important;}
@@ -32,7 +37,6 @@ st.markdown("""
     div[class*="viewerBadge"] {display: none !important; visibility: hidden !important;}
     div[class*="ProfileBadge"] {display: none !important; visibility: hidden !important;}
     div[class*="manageApp"] {display: none !important; visibility: hidden !important;}
-    button[data-testid="baseButton-headerNoPadding"] {display: none !important;}
     a[href*="github.com"] {display: none !important;}
     img[src*="avatars.githubusercontent.com"] {display: none !important;}
     svg[data-icon="github"] {display: none !important;}
@@ -54,30 +58,30 @@ st.markdown("""
         margin-top: 6px;
         font-size: 1rem;
     }
-    .metric-box {
+    .upload-container {
         background: #f8f9fa;
-        border-radius: 10px;
-        padding: 18px;
-        border-left: 6px solid #0d3b66;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+        padding: 16px;
+        border-radius: 12px;
+        border: 2px dashed #0d3b66;
+        margin-bottom: 20px;
     }
     .badge-jaundice {
         background-color: #feeaa7;
         color: #d63031;
-        padding: 8px 16px;
+        padding: 10px 18px;
         border-radius: 20px;
         font-weight: bold;
-        font-size: 1.1rem;
+        font-size: 1.15rem;
         display: inline-block;
         border: 2px solid #e17055;
     }
     .badge-healthy {
         background-color: #d4edda;
         color: #155724;
-        padding: 8px 16px;
+        padding: 10px 18px;
         border-radius: 20px;
         font-weight: bold;
-        font-size: 1.1rem;
+        font-size: 1.15rem;
         display: inline-block;
         border: 2px solid #28a745;
     }
@@ -156,31 +160,52 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Sidebar
-st.sidebar.title("Clinical Controls")
-st.sidebar.info("ℹ️ **Scleral Icterus** is the yellowing of the sclera (white of the eye), an early clinical sign when serum bilirubin exceeds ~2.0-2.5 mg/dL.")
+st.sidebar.title("Clinical Information")
+st.sidebar.info("""
+ℹ️ **Scleral Icterus** is the yellowing of the sclera (white of the eye).
+It is one of the earliest clinical indicators of jaundice, appearing when serum total bilirubin exceeds **2.0–2.5 mg/dL**.
+""")
 
-# Input source choice
-input_mode = st.sidebar.radio(
-    "Choose Image Input Method:",
-    ["📁 Upload Image", "📷 Use Webcam", "🧪 Pre-loaded Test Samples"]
-)
+# Top Input Section directly on MAIN PAGE
+st.markdown("### 📤 Select or Upload Image (ছবি নির্বাচন বা আপলোড করুন)")
+
+tab_upload, tab_camera, tab_samples = st.tabs([
+    "📁 Upload Image (ছবি আপলোড)",
+    "📷 Live Camera (লাইভ ক্যামেরা)",
+    "🧪 Pre-loaded Samples (পরীক্ষামূলক নমুনা)"
+])
 
 selected_image = None
 image_label = ""
 
-if input_mode == "📁 Upload Image":
-    uploaded_file = st.sidebar.file_uploader("Upload eye or sclera photograph", type=["jpg", "jpeg", "png", "webp"])
+with tab_upload:
+    uploaded_file = st.file_uploader(
+        "Choose an eye/sclera photo from your phone or PC (JPG, JPEG, PNG, WEBP, BMP):",
+        type=["jpg", "jpeg", "png", "webp", "bmp"],
+        key="main_file_uploader",
+        help="Make sure the eye is in focus and well-lit without heavy shadows."
+    )
     if uploaded_file is not None:
-        selected_image = Image.open(uploaded_file)
-        image_label = uploaded_file.name
+        try:
+            im = Image.open(uploaded_file)
+            selected_image = ImageOps.exif_transpose(im)
+            image_label = uploaded_file.name
+            st.success(f"✅ Image loaded successfully: {uploaded_file.name}")
+        except Exception as e:
+            st.error(f"Could not read the uploaded image: {e}")
 
-elif input_mode == "📷 Use Webcam":
-    camera_photo = st.sidebar.camera_input("Capture eye or face photo")
+with tab_camera:
+    camera_photo = st.camera_input("Take a photo of the eye", key="main_camera_input")
     if camera_photo is not None:
-        selected_image = Image.open(camera_photo)
-        image_label = "Live Webcam Capture"
+        try:
+            im = Image.open(camera_photo)
+            selected_image = ImageOps.exif_transpose(im)
+            image_label = "Live Camera Capture"
+            st.success("✅ Camera photo captured successfully!")
+        except Exception as e:
+            st.error(f"Could not process camera image: {e}")
 
-elif input_mode == "🧪 Pre-loaded Test Samples":
+with tab_samples:
     sample_options = {
         "Normal / Healthy Eye (Sample 1)": "test_Healthy_0.jpg",
         "Normal / Healthy Eye (Sample 2)": "test_Healthy_1.jpg",
@@ -189,13 +214,17 @@ elif input_mode == "🧪 Pre-loaded Test Samples":
         "Jaundice / Scleral Icterus (Sample 2)": "test_Jaundice_1.jpg",
         "Jaundice / Scleral Icterus (Sample 3)": "test_Jaundice_2.jpg",
     }
-    choice = st.sidebar.selectbox("Select sample case:", list(sample_options.keys()))
+    choice = st.selectbox("Select clinical sample case:", list(sample_options.keys()), key="sample_selector")
     sample_path = os.path.join(SAMPLES_DIR, sample_options[choice])
     if os.path.exists(sample_path):
-        selected_image = Image.open(sample_path)
-        image_label = choice
-    else:
-        st.sidebar.error("Sample image not found.")
+        if st.button("Load This Sample", key="btn_load_sample") or selected_image is None:
+            try:
+                selected_image = Image.open(sample_path)
+                image_label = choice
+            except Exception as e:
+                st.error(f"Error loading sample: {e}")
+
+st.divider()
 
 # Main display
 col_left, col_right = st.columns([1, 1], gap="large")
@@ -267,8 +296,7 @@ if selected_image is not None:
                 """)
 else:
     with col_left:
-        st.info("👈 Please choose an option from the sidebar (Upload an image, turn on Webcam, or click a pre-loaded test sample) to begin.")
-        st.image("https://images.unsplash.com/photo-1584515979956-d9f6e5d09982?w=800&auto=format&fit=crop&q=60", caption="Non-invasive clinical sclera examination", use_container_width=True)
+        st.info("👆 Please upload an image above, take a photo with your camera, or select a pre-loaded sample.")
     with col_right:
         st.markdown("""
         ### How the IcterusLens AI System Works
