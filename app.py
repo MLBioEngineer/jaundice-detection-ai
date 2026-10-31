@@ -17,19 +17,25 @@ st.set_page_config(
 st.markdown("""
 <style>
     /* Hide Streamlit default header, footer, and menu */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-    [data-testid="stHeader"] {display: none;}
+    #MainMenu {visibility: hidden; display: none !important;}
+    footer {visibility: hidden; display: none !important;}
+    header {visibility: hidden; display: none !important;}
+    [data-testid="stHeader"] {display: none !important; visibility: hidden !important;}
+    [data-testid="stDecoration"] {display: none !important;}
+    #stDecoration {display: none !important;}
     
-    /* Hide Streamlit Cloud GitHub profile badge & manage app button */
+    /* Hide Streamlit Cloud GitHub profile badge, avatar & manage app button */
     .stDeployButton {display: none !important;}
     [data-testid="stToolbar"] {display: none !important;}
     [data-testid="stToolbarActions"] {display: none !important;}
-    [data-testid="manage-app-button"] {display: none !important;}
-    div[class*="viewerBadge"] {display: none !important;}
-    div[class*="ProfileBadge"] {display: none !important;}
-    div[class*="manageApp"] {display: none !important;}
+    [data-testid="manage-app-button"] {display: none !important; visibility: hidden !important;}
+    div[class*="viewerBadge"] {display: none !important; visibility: hidden !important;}
+    div[class*="ProfileBadge"] {display: none !important; visibility: hidden !important;}
+    div[class*="manageApp"] {display: none !important; visibility: hidden !important;}
+    button[data-testid="baseButton-headerNoPadding"] {display: none !important;}
+    a[href*="github.com"] {display: none !important;}
+    img[src*="avatars.githubusercontent.com"] {display: none !important;}
+    svg[data-icon="github"] {display: none !important;}
     
     .main-header {
         background: linear-gradient(135deg, #0d3b66 0%, #001e3d 100%);
