@@ -93,10 +93,17 @@ st.markdown("""
     .rejection-box {
         background-color: #ffebee;
         border-left: 6px solid #d32f2f;
-        padding: 18px 22px;
+        padding: 20px 24px;
         border-radius: 10px;
         margin: 15px 0;
-        box-shadow: 0 2px 8px rgba(211, 47, 47, 0.1);
+        box-shadow: 0 2px 8px rgba(211, 47, 47, 0.12);
+    }
+    .zoom-box {
+        background-color: #e3f2fd;
+        border-left: 6px solid #1976d2;
+        padding: 12px 18px;
+        border-radius: 8px;
+        margin-bottom: 12px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -112,52 +119,89 @@ def load_classifier():
         return None
     return joblib.load(MODEL_PATH)
 
-model = load_classifier()
-
 @st.cache_resource
 def load_cascades():
+    face_c = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
     eye_c = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye.xml")
     eye_tree_c = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye_tree_eyeglasses.xml")
-    face_c = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    return eye_c, eye_tree_c, face_c
+    return face_c, eye_c, eye_tree_c
 
-eye_cascade, eye_tree_cascade, face_cascade = load_cascades()
+model = load_classifier()
+face_cascade, eye_cascade, eye_tree_cascade = load_cascades()
 
-def verify_eye_image(im):
+def process_and_extract_eye(im_pil):
     """
-    OpenCV Cascade + Biological Verification Gate.
-    Verifies human eye presence and strictly rejects shoes, clothing, furniture, cars, objects.
+    Intelligent Eye Localizer:
+    1. If full face is uploaded: detects face, zooms into the eye, and verifies sclera.
+    2. If close-up eye is uploaded: verifies eye presence.
+    3. If non-eye (shoe, landscape, clothes, animal): strictly rejects.
     """
-    im_rgb = im.convert("RGB")
+    im_rgb = im_pil.convert("RGB")
     arr = np.array(im_rgb)
-    
-    # 1. Biological Palette Check (Human skin & eye tissue is warm; R > B on average)
-    arr_f = arr.astype(np.float32) / 255.0
-    r, g, b = arr_f[:,:,0], arr_f[:,:,1], arr_f[:,:,2]
-    if np.mean(b) > np.mean(r) + 0.12:
-        return False, "Unnatural non-biological colors (predominantly blue/cool tones). Not a human eye."
-    if np.mean(g) > np.mean(r) + 0.18:
-        return False, "Unnatural non-biological colors (predominantly green tones). Not a human eye."
-        
-    # 2. OpenCV Haar Cascades for Biometric Eye & Face Detection
+    h_orig, w_orig, _ = arr.shape
     gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+    
+    # Check for faces
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4)
+    
+    if len(faces) > 0:
+        # Sort by largest face
+        faces = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)
+        fx, fy, fw, fh = faces[0]
+        
+        # Face must be large enough so the eye is at least 30-40 pixels
+        if fw < 85 or fh < 85:
+            return None, False, "Face is too far away in the background. The eye is too small to inspect sclera. Please take a closer photo focusing on the face/eyes."
+            
+        # Upper face zone where eyes sit (18% to 58% down the face)
+        eye_zone_y1 = max(0, fy + int(fh * 0.18))
+        eye_zone_y2 = min(h_orig, fy + int(fh * 0.58))
+        eye_zone_x1 = max(0, fx + int(fw * 0.08))
+        eye_zone_x2 = min(w_orig, fx + int(fw * 0.92))
+        
+        eye_zone_gray = gray[eye_zone_y1:eye_zone_y2, eye_zone_x1:eye_zone_x2]
+        
+        # Detect individual eye within face eye zone
+        eyes = eye_cascade.detectMultiScale(eye_zone_gray, scaleFactor=1.1, minNeighbors=3)
+        if len(eyes) == 0:
+            eyes = eye_tree_cascade.detectMultiScale(eye_zone_gray, scaleFactor=1.1, minNeighbors=2)
+            
+        if len(eyes) > 0:
+            ex, ey, ew, eh = sorted(eyes, key=lambda e: e[2]*e[3], reverse=True)[0]
+            pad_x = int(ew * 0.28)
+            pad_y = int(eh * 0.28)
+            crop_y1 = max(0, eye_zone_y1 + ey - pad_y)
+            crop_y2 = min(h_orig, eye_zone_y1 + ey + eh + pad_y)
+            crop_x1 = max(0, eye_zone_x1 + ex - pad_x)
+            crop_x2 = min(w_orig, eye_zone_x1 + ex + ew + pad_x)
+            cropped_eye = im_rgb.crop((crop_x1, crop_y1, crop_x2, crop_y2))
+        else:
+            cropped_eye = im_rgb.crop((eye_zone_x1, eye_zone_y1, eye_zone_x2, eye_zone_y2))
+            
+        # Check sclera visibility in cropped eye (detect dark sunglasses or closed eyes)
+        arr_eye = np.array(cropped_eye.resize((128, 128)), dtype=np.float32) / 255.0
+        r, g, b = arr_eye[:,:,0], arr_eye[:,:,1], arr_eye[:,:,2]
+        lum = 0.299*r + 0.587*g + 0.114*b
+        sclera_pixels = (lum >= 0.38) & ((r + g) - 2.0*b > -0.15)
+        
+        if np.mean(sclera_pixels) < 0.06:
+            return cropped_eye, False, "No visible white sclera detected. Eyes may be closed or obscured by dark sunglasses. Clear sclera is required for jaundice screening."
+            
+        return cropped_eye, True, "Full face detected. Automatically zoomed and cropped into the eye!"
+        
+    # Check if already a close-up eye
     eyes1 = eye_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3)
     eyes2 = eye_tree_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3)
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3)
     
-    total_detections = len(eyes1) + len(eyes2) + len(faces)
+    # Check warm biological colors
+    arr_f = arr.astype(np.float32) / 255.0
+    r, g, b = arr_f[:,:,0], arr_f[:,:,1], arr_f[:,:,2]
+    is_warm = (np.mean(r) >= np.mean(b) - 0.05) and (np.mean(r) >= np.mean(g) - 0.10)
     
-    # 3. Fallback for tight sclera macro crops
-    if total_detections == 0:
-        h, w = gray.shape
-        if h > 80 and w > 80:
-            crop = gray[int(h*0.1):int(h*0.9), int(w*0.1):int(w*0.9)]
-            e_crop = eye_cascade.detectMultiScale(crop, scaleFactor=1.05, minNeighbors=2)
-            if len(e_crop) > 0:
-                return True, "Valid human eye confirmed."
-        return False, "No human eye or face detected (OpenCV biometric scan found 0 eyes). Please upload a clear photo of an eye."
+    if (len(eyes1) > 0 or len(eyes2) > 0) and is_warm:
+        return im_rgb, True, "Close-up human eye verified."
         
-    return True, "Valid human eye confirmed."
+    return None, False, "No human eye or face detected. Non-eye objects (shoes, clothing, cars, animals, landscapes) are strictly rejected."
 
 def extract_features_from_pil(im):
     im_rgb = im.convert("RGB")
@@ -223,12 +267,14 @@ st.sidebar.info("""
 ℹ️ **Scleral Icterus** is the yellowing of the sclera (white of the eye).
 It is one of the earliest clinical indicators of jaundice, appearing when serum total bilirubin exceeds **2.0–2.5 mg/dL**.
 
-🛡️ **Eye Validation Gate Active**:
-This system strictly screens images to ensure only human eyes are analyzed. Non-eye objects (shoes, clothing, animals, objects) are automatically rejected.
+🛡️ **Strict Eye & Face Gatekeeper**:
+- Non-eye images (shoes, clothing, cars, animals) are **strictly rejected**.
+- Full face photos are **automatically zoomed** into the eye region.
+- Photos with dark sunglasses or closed eyes are **rejected** because visible sclera is required.
 """)
 
 # Top Input Section directly on MAIN PAGE
-st.markdown("### 📤 Select or Upload Image (ছবি নির্বাচন বা আপলোড করুন)")
+st.markdown("### 📤 Select or Upload Image (ছবি আপলোড বা নির্বাচন করুন)")
 
 tab_upload, tab_camera, tab_samples = st.tabs([
     "📁 Upload Image (ছবি আপলোড)",
@@ -241,26 +287,28 @@ image_label = ""
 
 with tab_upload:
     uploaded_file = st.file_uploader(
-        "Choose an eye/sclera photo from your phone or PC (JPG, JPEG, PNG, WEBP, BMP):",
+        "Choose an eye or face photo from your phone or PC (JPG, JPEG, PNG, WEBP, BMP):",
         type=["jpg", "jpeg", "png", "webp", "bmp"],
         key="main_file_uploader",
-        help="Make sure the eye is in focus and well-lit without heavy shadows."
+        help="Upload either a close-up eye photo or a face portrait looking at the camera."
     )
     if uploaded_file is not None:
         try:
             im = Image.open(uploaded_file)
             selected_image = ImageOps.exif_transpose(im)
             image_label = uploaded_file.name
+            st.success(f"✅ Image loaded: {uploaded_file.name}")
         except Exception as e:
             st.error(f"Could not read the uploaded image: {e}")
 
 with tab_camera:
-    camera_photo = st.camera_input("Take a photo of the eye", key="main_camera_input")
+    camera_photo = st.camera_input("Take a photo of the face or eye", key="main_camera_input")
     if camera_photo is not None:
         try:
             im = Image.open(camera_photo)
             selected_image = ImageOps.exif_transpose(im)
             image_label = "Live Camera Capture"
+            st.success("✅ Camera photo captured successfully!")
         except Exception as e:
             st.error(f"Could not process camera image: {e}")
 
@@ -285,43 +333,50 @@ with tab_samples:
 
 st.divider()
 
-# Main display
+# Main Display & Intelligent Eye Processing
 if selected_image is not None:
-    # STEP 1: Eye Verification Gate
-    is_eye, eye_reason = verify_eye_image(selected_image)
+    # RUN INTELLIGENT EYE LOCALIZER & GATEKEEPER
+    eye_img, is_valid_eye, gate_message = process_and_extract_eye(selected_image)
     
     col_left, col_right = st.columns([1, 1], gap="large")
     
     with col_left:
-        st.subheader("📸 Subject Image")
-        st.image(selected_image, caption=f"Input: {image_label}", use_container_width=True)
-    
-    if not is_eye:
-        # NON-EYE REJECTION BRANCH
+        st.subheader("📸 Uploaded Subject Image")
+        st.image(selected_image, caption=f"Original Input: {image_label}", use_container_width=True)
+        
+        if eye_img is not None and eye_img != selected_image:
+            st.markdown('<div class="zoom-box">🔍 <strong>Auto-Zoomed Eye Region (স্বয়ংক্রিয়ভাবে জুম করা চোখের অংশ)</strong></div>', unsafe_allow_html=True)
+            st.image(eye_img, caption="Cropped Eye Analyzed by AI", use_container_width=True)
+            
+    if not is_valid_eye:
+        # STRICT REJECTION BRANCH - ZERO PREDICTIONS
         with col_right:
             st.markdown(f"""
             <div class="rejection-box">
-                <h3 style="color: #c62828; margin: 0 0 10px 0;">❌ Not an Eye Image (চোখের ছবি নয়)</h3>
+                <h3 style="color: #c62828; margin: 0 0 10px 0;">❌ Prediction Rejected: Not a Valid Eye Image</h3>
+                <h4 style="color: #b71c1c; margin: 0 0 12px 0;">(কোনো স্পষ্ট চোখ পাওয়া যায়নি — পরীক্ষা বাতিল)</h4>
                 <p style="color: #212121; font-size: 1.05rem; margin-bottom: 8px;">
-                    <strong>Detection Reason:</strong> {eye_reason}
+                    <strong>Detailed Reason:</strong> {gate_message}
                 </p>
                 <hr style="border: 0; border-top: 1px solid #ffcdd2; margin: 12px 0;">
                 <p style="color: #424242; font-size: 0.95rem; margin: 0;">
-                    🛡️ <strong>Model Protection:</strong> This application is trained <strong>strictly and exclusively for human eye jaundice screening</strong>.
-                    Non-eye objects such as <strong>shoes, clothing, random items, or animals</strong> are automatically rejected and cannot be analyzed for jaundice.
+                    🛡️ <strong>Safety Guarantee:</strong> This application is trained <strong>exclusively on human eye sclera data</strong>.
+                    Images of <strong>shoes, clothing, animals, landscapes, or faces with dark sunglasses</strong> are strictly blocked to prevent false diagnoses.
                 </p>
             </div>
             """, unsafe_allow_html=True)
             
-            st.info("""
-            **📋 Guidelines for a valid eye test:**
-            1. Frame the photograph closely on the **eye**.
-            2. Make sure the **white of the eye (sclera)** and **iris/pupil** are clearly visible.
-            3. Use natural, even lighting without excessive glare or dark shadows.
+            st.warning("""
+            **📋 Guidelines for a valid test (সঠিকভাবে পরীক্ষা করার নিয়ম):**
+            1. **Take a closer photo**: The face or eye must be close enough so the eye details are clear.
+            2. **No sunglasses**: Do not wear dark glasses or sunglasses.
+            3. **Keep eyes open**: Sclera (white of the eye) must be visible.
+            4. **Good lighting**: Use natural, even lighting.
             """)
     else:
         # VALID EYE ANALYSIS BRANCH
-        feats, diag = extract_features_from_pil(selected_image)
+        target_eye = eye_img if eye_img is not None else selected_image
+        feats, diag = extract_features_from_pil(target_eye)
         
         with col_left:
             st.markdown("#### 🔍 Sclera Detection Region of Interest (ROI)")
@@ -332,7 +387,7 @@ if selected_image is not None:
 
         with col_right:
             st.subheader("🔬 AI Diagnostic Assessment")
-            st.markdown('<div class="badge-eye-verified">👁️ Valid Human Eye Anatomy Confirmed</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="badge-eye-verified">👁️ {gate_message}</div>', unsafe_allow_html=True)
             
             if model is not None:
                 probabilities = model.predict_proba(feats)[0]
@@ -391,8 +446,10 @@ else:
         st.markdown("""
         ### How the IcterusLens AI System Works
         
-        1. **Eye Anatomical Verification Gate**:
-           Validates biological colors, contrast, iris presence, and smooth scleral gradients to ensure only human eyes are processed. Arbitrary objects (shoes, clothes, animals) are rejected.
+        1. **Intelligent Eye & Face Localizer**:
+           - **Close-up Eye Photos**: Verifies human eye geometry and biological tones.
+           - **Full Face Photos**: Automatically detects the face, zooms into the eye band, and crops the eye.
+           - **Non-Eye Rejection**: Rejects shoes, clothes, cars, distant landscapes, or sunglasses.
            
         2. **Sclera Segmentation & Multi-Space Colorimetry**:
            Isolates the scleral region of interest and computes the **Yellow Chromaticity Index**:
@@ -400,7 +457,7 @@ else:
            along with chrominance shifts in $RGB$, $HSV$, and $YCbCr$ color spaces.
         
         3. **Machine Learning Ensemble**:
-           Leverages Random Forest + Extra Trees trained on annotated clinical sclera samples, achieving an **84.6% accuracy** benchmark.
+           Leverages Random Forest + Extra Trees trained directly on the annotated clinical sclera dataset in `Jaundice_Dataset.zip`.
         """)
 
 st.divider()
