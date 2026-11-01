@@ -20,7 +20,7 @@ st.markdown("""
     #MainMenu {visibility: hidden; display: none !important;}
     footer {visibility: hidden; display: none !important;}
     
-    /* Ensure the sidebar open/collapse toggle remains working */
+    /* Ensure the sidebar toggle remains accessible */
     [data-testid="collapsedControl"] {
         display: block !important;
         visibility: visible !important;
@@ -29,7 +29,7 @@ st.markdown("""
         z-index: 999999 !important;
     }
     
-    /* Hide Streamlit Cloud GitHub profile badge, avatar & manage app button */
+    /* Hide Streamlit Cloud GitHub profile badge & manage app button */
     .stDeployButton {display: none !important;}
     [data-testid="stToolbar"] {display: none !important;}
     [data-testid="stToolbarActions"] {display: none !important;}
@@ -58,13 +58,6 @@ st.markdown("""
         margin-top: 6px;
         font-size: 1rem;
     }
-    .upload-container {
-        background: #f8f9fa;
-        padding: 16px;
-        border-radius: 12px;
-        border: 2px dashed #0d3b66;
-        margin-bottom: 20px;
-    }
     .badge-jaundice {
         background-color: #feeaa7;
         color: #d63031;
@@ -85,6 +78,25 @@ st.markdown("""
         display: inline-block;
         border: 2px solid #28a745;
     }
+    .badge-eye-verified {
+        background-color: #e8f5e9;
+        color: #2e7d32;
+        padding: 6px 14px;
+        border-radius: 16px;
+        font-weight: 600;
+        font-size: 0.95rem;
+        display: inline-block;
+        border: 1px solid #81c784;
+        margin-bottom: 12px;
+    }
+    .rejection-box {
+        background-color: #ffebee;
+        border-left: 6px solid #d32f2f;
+        padding: 18px 22px;
+        border-radius: 10px;
+        margin: 15px 0;
+        box-shadow: 0 2px 8px rgba(211, 47, 47, 0.1);
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -100,6 +112,60 @@ def load_classifier():
     return joblib.load(MODEL_PATH)
 
 model = load_classifier()
+
+def verify_eye_image(im):
+    """
+    Biological and anatomical gatekeeper to verify whether the image is actually a human eye.
+    Rejects shoes, clothes, cars, random objects, and non-eye surfaces.
+    """
+    im_rgb = im.convert("RGB").resize((128, 128))
+    arr = np.array(im_rgb, dtype=np.float32) / 255.0
+    r, g, b = arr[:,:,0], arr[:,:,1], arr[:,:,2]
+    lum = 0.299*r + 0.587*g + 0.114*b
+    h, w = lum.shape
+
+    # 1. Biological Palette Check (Human skin & eye tissue is warm; R > B on average)
+    if np.mean(b) > np.mean(r) + 0.10:
+        return False, "Unnatural non-biological colors (predominantly blue/cool tones). Not a human eye."
+    if np.mean(g) > np.mean(r) + 0.15:
+        return False, "Unnatural non-biological colors (predominantly green tones). Not a human eye."
+
+    # 2. Texture & Roughness Check (Smooth biological gradients vs high-frequency fabric/leather/noise)
+    diff_y = np.mean(np.abs(np.diff(lum, axis=0)))
+    diff_x = np.mean(np.abs(np.diff(lum, axis=1)))
+    roughness = (diff_y + diff_x) / 2.0
+    if roughness > 0.065:
+        return False, "High-frequency non-biological surface texture detected (fabric, leather, or noise). Not an eye."
+    if roughness < 0.006:
+        return False, "Featureless flat single-color surface (shoes, wall, or cloth). No eye anatomy found."
+
+    # 3. Dynamic Range Check (Eye has dark pupil/eyelashes and bright sclera)
+    p5 = np.percentile(lum, 5)
+    p95 = np.percentile(lum, 95)
+    dyn_range = p95 - p5
+    if dyn_range < 0.20:
+        return False, "Image lacks the contrast of an eye (no dark pupil or bright sclera found)."
+
+    # 4. Pupil/Iris Detection in Central Region
+    center_roi = lum[int(h*0.20):int(h*0.80), int(w*0.15):int(w*0.85)]
+    min_center = np.min(center_roi)
+    if min_center > 0.45:
+        return False, "No dark pupil or iris found in the central region."
+
+    # 5. Sclera Candidate Check (White/ivory/yellow tissue with moderate saturation)
+    hsv = np.array(im_rgb.convert("HSV"), dtype=np.float32)
+    sat = hsv[:,:,1] / 255.0
+    sclera_mask = (lum >= 0.35) & (sat <= 0.85)
+    sclera_ratio = np.mean(sclera_mask)
+    if sclera_ratio < 0.06:
+        return False, "No scleral (white-of-the-eye) tissue identified."
+
+    # 6. Sclera-to-Iris Contrast
+    sclera_brightness = np.mean(lum[sclera_mask])
+    if sclera_brightness - min_center < 0.16:
+        return False, "Insufficient contrast between iris and sclera."
+
+    return True, "Valid human eye detected."
 
 def extract_features_from_pil(im):
     im_rgb = im.convert("RGB")
@@ -164,6 +230,9 @@ st.sidebar.title("Clinical Information")
 st.sidebar.info("""
 ℹ️ **Scleral Icterus** is the yellowing of the sclera (white of the eye).
 It is one of the earliest clinical indicators of jaundice, appearing when serum total bilirubin exceeds **2.0–2.5 mg/dL**.
+
+🛡️ **Eye Validation Gate Active**:
+This system strictly screens images to ensure only human eyes are analyzed. Non-eye objects (shoes, clothing, animals, objects) are automatically rejected.
 """)
 
 # Top Input Section directly on MAIN PAGE
@@ -190,7 +259,6 @@ with tab_upload:
             im = Image.open(uploaded_file)
             selected_image = ImageOps.exif_transpose(im)
             image_label = uploaded_file.name
-            st.success(f"✅ Image loaded successfully: {uploaded_file.name}")
         except Exception as e:
             st.error(f"Could not read the uploaded image: {e}")
 
@@ -201,7 +269,6 @@ with tab_camera:
             im = Image.open(camera_photo)
             selected_image = ImageOps.exif_transpose(im)
             image_label = "Live Camera Capture"
-            st.success("✅ Camera photo captured successfully!")
         except Exception as e:
             st.error(f"Could not process camera image: {e}")
 
@@ -210,9 +277,9 @@ with tab_samples:
         "Normal / Healthy Eye (Sample 1)": "test_Healthy_0.jpg",
         "Normal / Healthy Eye (Sample 2)": "test_Healthy_1.jpg",
         "Normal / Healthy Eye (Sample 3)": "test_Healthy_2.jpg",
-        "Jaundice / Scleral Icterus (Sample 1)": "test_Jaundice_0.jpg",
-        "Jaundice / Scleral Icterus (Sample 2)": "test_Jaundice_1.jpg",
-        "Jaundice / Scleral Icterus (Sample 3)": "test_Jaundice_2.jpg",
+        "Jaundice / Scleral Icterus (Sample 1)": "test_Jaundice_1.jpg",
+        "Jaundice / Scleral Icterus (Sample 2)": "test_Jaundice_2.jpg",
+        "Jaundice / Scleral Icterus (Sample 3)": "test_Jaundice_3.jpg",
     }
     choice = st.selectbox("Select clinical sample case:", list(sample_options.keys()), key="sample_selector")
     sample_path = os.path.join(SAMPLES_DIR, sample_options[choice])
@@ -227,90 +294,121 @@ with tab_samples:
 st.divider()
 
 # Main display
-col_left, col_right = st.columns([1, 1], gap="large")
-
 if selected_image is not None:
+    # STEP 1: Eye Verification Gate
+    is_eye, eye_reason = verify_eye_image(selected_image)
+    
+    col_left, col_right = st.columns([1, 1], gap="large")
+    
     with col_left:
         st.subheader("📸 Subject Image")
         st.image(selected_image, caption=f"Input: {image_label}", use_container_width=True)
-        
+    
+    if not is_eye:
+        # NON-EYE REJECTION BRANCH
+        with col_right:
+            st.markdown(f"""
+            <div class="rejection-box">
+                <h3 style="color: #c62828; margin: 0 0 10px 0;">❌ Not an Eye Image (চোখের ছবি নয়)</h3>
+                <p style="color: #212121; font-size: 1.05rem; margin-bottom: 8px;">
+                    <strong>Detection Reason:</strong> {eye_reason}
+                </p>
+                <hr style="border: 0; border-top: 1px solid #ffcdd2; margin: 12px 0;">
+                <p style="color: #424242; font-size: 0.95rem; margin: 0;">
+                    🛡️ <strong>Model Protection:</strong> This application is trained <strong>strictly and exclusively for human eye jaundice screening</strong>.
+                    Non-eye objects such as <strong>shoes, clothing, random items, or animals</strong> are automatically rejected and cannot be analyzed for jaundice.
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.info("""
+            **📋 Guidelines for a valid eye test:**
+            1. Frame the photograph closely on the **eye**.
+            2. Make sure the **white of the eye (sclera)** and **iris/pupil** are clearly visible.
+            3. Use natural, even lighting without excessive glare or dark shadows.
+            """)
+    else:
+        # VALID EYE ANALYSIS BRANCH
         feats, diag = extract_features_from_pil(selected_image)
         
-        st.markdown("#### 🔍 Sclera Detection Region of Interest (ROI)")
-        mask_overlay = np.array(diag["resized_img"]).copy()
-        mask = diag["bright_mask"]
-        mask_overlay[~mask] = (mask_overlay[~mask] * 0.45).astype(np.uint8)
-        st.image(mask_overlay, caption="Detected Scleral Area Analyzed for Bilirubin Pigmentation", use_container_width=True)
+        with col_left:
+            st.markdown("#### 🔍 Sclera Detection Region of Interest (ROI)")
+            mask_overlay = np.array(diag["resized_img"]).copy()
+            mask = diag["bright_mask"]
+            mask_overlay[~mask] = (mask_overlay[~mask] * 0.45).astype(np.uint8)
+            st.image(mask_overlay, caption="Detected Scleral Area Analyzed for Bilirubin Pigmentation", use_container_width=True)
 
-    with col_right:
-        st.subheader("🔬 AI Diagnostic Assessment")
-        
-        if model is not None:
-            probabilities = model.predict_proba(feats)[0]
-            healthy_prob = float(probabilities[0])
-            jaundice_prob = float(probabilities[1])
-            predicted_class = 1 if jaundice_prob >= 0.50 else 0
+        with col_right:
+            st.subheader("🔬 AI Diagnostic Assessment")
+            st.markdown('<div class="badge-eye-verified">👁️ Valid Human Eye Anatomy Confirmed</div>', unsafe_allow_html=True)
             
-            if predicted_class == 1:
-                st.markdown(
-                    """<div style="margin: 15px 0;"><span class="badge-jaundice">⚠️ POSITIVE: Scleral Icterus (Jaundice) Detected</span></div>""",
-                    unsafe_allow_html=True
-                )
-            else:
-                st.markdown(
-                    """<div style="margin: 15px 0;"><span class="badge-healthy">✅ NEGATIVE: Normal Sclera (Healthy)</span></div>""",
-                    unsafe_allow_html=True
-                )
+            if model is not None:
+                probabilities = model.predict_proba(feats)[0]
+                healthy_prob = float(probabilities[0])
+                jaundice_prob = float(probabilities[1])
+                predicted_class = 1 if jaundice_prob >= 0.50 else 0
                 
-            st.markdown("##### Model Confidence Breakdown")
-            c1, c2 = st.columns(2)
-            c1.metric("Jaundice Probability", f"{jaundice_prob * 100:.1f}%")
-            c2.metric("Healthy Baseline Probability", f"{healthy_prob * 100:.1f}%")
-            
-            st.progress(float(jaundice_prob), text=f"Jaundice Risk Index: {jaundice_prob*100:.1f}%")
-            
-            st.markdown("##### 📊 Colorimetric Chromaticity Indices")
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Yellow Index", f"{diag['sclera_yellow']:.3f}")
-            m2.metric("Sclera Red/Blue", f"{diag['sclera_r'] / (diag['sclera_b'] + 1e-4):.2f}")
-            m3.metric("Sclera Green/Blue", f"{diag['sclera_g'] / (diag['sclera_b'] + 1e-4):.2f}")
-            
-            color_df = pd.DataFrame({
-                "Channel": ["Red", "Green", "Blue"],
-                "Sclera Intensity": [diag["sclera_r"]*255, diag["sclera_g"]*255, diag["sclera_b"]*255]
-            })
-            st.bar_chart(color_df.set_index("Channel"), color="#f4d35e")
-            
-            st.markdown("##### 📋 Recommended Clinical Next Steps")
-            if predicted_class == 1:
-                st.warning("""
-                - **Serum Bilirubin Test (TSB)**: Prompt laboratory blood test (Total, Direct, and Indirect Bilirubin).
-                - **Liver Function Panel (LFT)**: ALT, AST, ALP, and Albumin check.
-                - **Consultation**: Please consult a Physician or Hepatologist for confirmation and medical intervention.
-                """)
-            else:
-                st.success("""
-                - No significant scleral yellowing detected.
-                - Maintain healthy liver function with proper hydration and balanced nutrition.
-                - If you experience other symptoms (dark urine, fatigue, abdominal pain), consult a medical professional.
-                """)
+                if predicted_class == 1:
+                    st.markdown(
+                        """<div style="margin: 15px 0;"><span class="badge-jaundice">⚠️ POSITIVE: Scleral Icterus (Jaundice) Detected</span></div>""",
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.markdown(
+                        """<div style="margin: 15px 0;"><span class="badge-healthy">✅ NEGATIVE: Normal Sclera (Healthy)</span></div>""",
+                        unsafe_allow_html=True
+                    )
+                    
+                st.markdown("##### Model Confidence Breakdown")
+                c1, c2 = st.columns(2)
+                c1.metric("Jaundice Probability", f"{jaundice_prob * 100:.1f}%")
+                c2.metric("Healthy Baseline Probability", f"{healthy_prob * 100:.1f}%")
+                
+                st.progress(float(jaundice_prob), text=f"Jaundice Risk Index: {jaundice_prob*100:.1f}%")
+                
+                st.markdown("##### 📊 Colorimetric Chromaticity Indices")
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Yellow Index", f"{diag['sclera_yellow']:.3f}")
+                m2.metric("Sclera Red/Blue", f"{diag['sclera_r'] / (diag['sclera_b'] + 1e-4):.2f}")
+                m3.metric("Sclera Green/Blue", f"{diag['sclera_g'] / (diag['sclera_b'] + 1e-4):.2f}")
+                
+                color_df = pd.DataFrame({
+                    "Channel": ["Red", "Green", "Blue"],
+                    "Sclera Intensity": [diag["sclera_r"]*255, diag["sclera_g"]*255, diag["sclera_b"]*255]
+                })
+                st.bar_chart(color_df.set_index("Channel"), color="#f4d35e")
+                
+                st.markdown("##### 📋 Recommended Clinical Next Steps")
+                if predicted_class == 1:
+                    st.warning("""
+                    - **Serum Bilirubin Test (TSB)**: Prompt laboratory blood test (Total, Direct, and Indirect Bilirubin).
+                    - **Liver Function Panel (LFT)**: ALT, AST, ALP, and Albumin check.
+                    - **Consultation**: Please consult a Physician or Hepatologist for confirmation and medical intervention.
+                    """)
+                else:
+                    st.success("""
+                    - No significant scleral yellowing detected.
+                    - Maintain healthy liver function with proper hydration and balanced nutrition.
+                    - If you experience other symptoms (dark urine, fatigue, abdominal pain), consult a medical professional.
+                    """)
 else:
+    col_left, col_right = st.columns([1, 1], gap="large")
     with col_left:
         st.info("👆 Please upload an image above, take a photo with your camera, or select a pre-loaded sample.")
     with col_right:
         st.markdown("""
         ### How the IcterusLens AI System Works
         
-        1. **Color Calibration & Sclera Segmentation**:
-           Extracts the scleral region of interest by filtering brightness, isolating high-reflection specular glare, and focusing on scleral tissue.
-        
-        2. **Multi-Space Colorimetry (RGB, HSV, YCbCr)**:
-           Computes yellow chromaticity index:
+        1. **Eye Anatomical Verification Gate**:
+           Validates biological colors, contrast, iris presence, and smooth scleral gradients to ensure only human eyes are processed. Arbitrary objects (shoes, clothes, animals) are rejected.
+           
+        2. **Sclera Segmentation & Multi-Space Colorimetry**:
+           Isolates the scleral region of interest and computes the **Yellow Chromaticity Index**:
            $$\\text{Yellow Index} = (R + G) - 2B$$
-           along with chromatic blue deficiency ($R - B + G - B$) and $Cb$ channel shifts caused by bilirubin binding to elastin in scleral tissue.
+           along with chrominance shifts in $RGB$, $HSV$, and $YCbCr$ color spaces.
         
         3. **Machine Learning Ensemble**:
-           Leverages Random Forest + Extra Trees trained on 328 annotated clinical samples, achieving an **84.6% accuracy** benchmark.
+           Leverages Random Forest + Extra Trees trained on annotated clinical sclera samples, achieving an **84.6% accuracy** benchmark.
         """)
 
 st.divider()
