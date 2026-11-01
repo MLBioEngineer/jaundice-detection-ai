@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image, ImageOps
 import streamlit as st
+import streamlit.components.v1 as components
 
 st.set_page_config(
     page_title="IcterusLens AI - Jaundice Detection",
@@ -15,12 +16,14 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom Styling
+# Custom Styling to Hide "Hosted with Streamlit", Menus, and Branding
 st.markdown("""
 <style>
-    /* Hide Streamlit default branding and menu */
-    #MainMenu {visibility: hidden; display: none !important;}
-    footer {visibility: hidden; display: none !important;}
+    /* Completely Hide Streamlit Menus, Headers, and Footers */
+    #MainMenu {visibility: hidden !important; display: none !important;}
+    header {visibility: hidden !important; display: none !important;}
+    footer {visibility: hidden !important; display: none !important;}
+    footer:after {content: "" !important; display: none !important;}
     
     /* Ensure the sidebar toggle remains accessible */
     [data-testid="collapsedControl"] {
@@ -31,12 +34,24 @@ st.markdown("""
         z-index: 999999 !important;
     }
     
-    /* Hide Streamlit Cloud GitHub profile badge & manage app button */
+    /* Hide Streamlit Cloud "Hosted with Streamlit" Badge & Viewer Badges */
+    .viewerBadge_container__1QSob {display: none !important; visibility: hidden !important;}
+    .viewerBadge_link__146K3 {display: none !important; visibility: hidden !important;}
+    a[class*="viewerBadge"] {display: none !important; visibility: hidden !important;}
+    div[class*="viewerBadge"] {display: none !important; visibility: hidden !important;}
+    span[class*="viewerBadge"] {display: none !important; visibility: hidden !important;}
+    div[class*="StyledFooter"] {display: none !important; visibility: hidden !important;}
+    div[class*="StreamlitBranding"] {display: none !important; visibility: hidden !important;}
+    a[href*="streamlit.io"] {display: none !important; visibility: hidden !important;}
+    a[href*="streamlit.app"] {display: none !important; visibility: hidden !important;}
+    
+    /* Hide Cloud Toolbar, Deploy Buttons & GitHub profile elements */
     .stDeployButton {display: none !important;}
+    [data-testid="stDecoration"] {display: none !important;}
+    [data-testid="stStatusWidget"] {display: none !important;}
     [data-testid="stToolbar"] {display: none !important;}
     [data-testid="stToolbarActions"] {display: none !important;}
     [data-testid="manage-app-button"] {display: none !important; visibility: hidden !important;}
-    div[class*="viewerBadge"] {display: none !important; visibility: hidden !important;}
     div[class*="ProfileBadge"] {display: none !important; visibility: hidden !important;}
     div[class*="manageApp"] {display: none !important; visibility: hidden !important;}
     a[href*="github.com"] {display: none !important;}
@@ -108,6 +123,39 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+# Dynamic Cloud Badge & "Hosted with Streamlit" Remover
+components.html("""
+<script>
+    function removeStreamlitBranding() {
+        try {
+            const targets = [
+                'footer',
+                '.viewerBadge_container__1QSob',
+                'a[class*="viewerBadge"]',
+                'div[class*="viewerBadge"]',
+                'span[class*="viewerBadge"]',
+                '[data-testid="stStatusWidget"]',
+                '[data-testid="manage-app-button"]',
+                'div[class*="manageApp"]',
+                'a[href*="streamlit.io"]'
+            ];
+            // Clean inside current frame
+            targets.forEach(sel => {
+                document.querySelectorAll(sel).forEach(el => el.remove());
+            });
+            // Clean inside parent window (if running on Streamlit Cloud)
+            if (window.parent && window.parent.document) {
+                targets.forEach(sel => {
+                    window.parent.document.querySelectorAll(sel).forEach(el => el.remove());
+                });
+            }
+        } catch(e) {}
+    }
+    removeStreamlitBranding();
+    setInterval(removeStreamlitBranding, 400);
+</script>
+""", height=0, width=0)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(APP_DIR, "jaundice_ensemble_model.joblib")
