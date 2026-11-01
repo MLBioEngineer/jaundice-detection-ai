@@ -2,6 +2,7 @@ import os
 import io
 import joblib
 import cv2
+import requests
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageOps
@@ -287,9 +288,10 @@ It is one of the earliest clinical indicators of jaundice, appearing when serum 
 # Top Input Section directly on MAIN PAGE
 st.markdown("### 📤 Select or Upload Image (ছবি আপলোড বা নির্বাচন করুন)")
 
-tab_upload, tab_camera, tab_samples = st.tabs([
+tab_upload, tab_camera, tab_esp32, tab_samples = st.tabs([
     "📁 Upload Image (ছবি আপলোড)",
-    "📷 Live Camera (লাইভ ক্যামেরা)",
+    "📷 Live WebCam (লাইভ ক্যামেরা)",
+    "📡 ESP32-CAM Hardware (আইওটি ডিভাইস)",
     "🧪 Pre-loaded Samples (পরীক্ষামূলক নমুনা)"
 ])
 
@@ -322,6 +324,47 @@ with tab_camera:
             st.success("✅ Camera photo captured successfully!")
         except Exception as e:
             st.error(f"Could not process camera image: {e}")
+
+with tab_esp32:
+    st.markdown("##### 🔬 ESP32-CAM Macro Scanner Integration")
+    st.caption("Capture real-time eye sclera photos directly from your ESP32-CAM hardware over Wi-Fi.")
+    
+    col_ip, col_btn = st.columns([3, 1])
+    with col_ip:
+        esp32_ip = st.text_input(
+            "ESP32-CAM URL / IP Endpoint:",
+            value=st.session_state.get("saved_esp32_ip", "http://192.168.4.1/capture"),
+            key="esp32_ip_input",
+            help="Enter the IP address shown in your Arduino Serial Monitor (e.g. http://192.168.4.1/capture or http://192.168.1.105/capture)"
+        )
+    with col_btn:
+        st.write("")
+        st.write("")
+        btn_capture_esp32 = st.button("📸 Capture Eye Image", key="btn_capture_esp32", use_container_width=True)
+        
+    if btn_capture_esp32:
+        if not esp32_ip:
+            st.error("Please enter the ESP32-CAM IP address!")
+        else:
+            clean_url = esp32_ip.strip()
+            if not clean_url.startswith("http://") and not clean_url.startswith("https://"):
+                clean_url = "http://" + clean_url
+            if not clean_url.endswith("/capture") and not clean_url.endswith(".jpg"):
+                clean_url = clean_url.rstrip("/") + "/capture"
+                
+            with st.spinner("📡 Connecting to ESP32-CAM hardware and capturing eye photo..."):
+                try:
+                    resp = requests.get(clean_url, timeout=5)
+                    if resp.status_code == 200:
+                        im = Image.open(io.BytesIO(resp.content))
+                        selected_image = ImageOps.exif_transpose(im)
+                        image_label = f"ESP32-CAM Hardware ({clean_url})"
+                        st.session_state["saved_esp32_ip"] = esp32_ip
+                        st.success("✅ Photo captured successfully from ESP32-CAM!")
+                    else:
+                        st.error(f"ESP32-CAM responded with HTTP {resp.status_code}")
+                except Exception as ex:
+                    st.error(f"❌ Failed to reach ESP32-CAM at `{clean_url}`. Please verify your laptop is connected to the ESP32 Wi-Fi / Hotspot. Details: {ex}")
 
 with tab_samples:
     sample_options = {
