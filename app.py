@@ -131,27 +131,28 @@ face_cascade, eye_cascade, eye_tree_cascade = load_cascades()
 
 def process_and_extract_eye(im_pil):
     """
-    Intelligent Eye Localizer:
-    1. If full face is uploaded: detects face, zooms into the eye, and verifies sclera.
-    2. If close-up eye is uploaded: verifies eye presence.
-    3. If non-eye (shoe, landscape, clothes, animal): strictly rejects.
+    Intelligent Eye Localizer & Clinical Gatekeeper:
+    1. Full face: Requires adequate close-up resolution (face >= 260px or >= 38% width),
+       frontal gaze with open eye, visible iris/pupil and sclera. Distant sitting or side-profile photos are rejected.
+    2. Close-up eye macro: Verifies human eye geometry and biological tones.
+    3. Strict non-eye rejection: Rejects shoes, clothes, cars, landscapes, sunglasses, or occluded eyes.
     """
     im_rgb = im_pil.convert("RGB")
     arr = np.array(im_rgb)
     h_orig, w_orig, _ = arr.shape
     gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
     
-    # Check for faces
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4)
+    # Check for faces (minSize 140x140 prevents false face detection inside close-up eyes)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(140, 140))
     
     if len(faces) > 0:
         # Sort by largest face
         faces = sorted(faces, key=lambda f: f[2]*f[3], reverse=True)
         fx, fy, fw, fh = faces[0]
         
-        # Face must be large enough so the eye is at least 30-40 pixels
-        if fw < 85 or fh < 85:
-            return None, False, "Face is too far away in the background. The eye is too small to inspect sclera. Please take a closer photo focusing on the face/eyes."
+        # Face must be large enough: close-up portrait (not far sitting/standing body shot)
+        if fw < 260 and (fw / w_orig) < 0.38:
+            return None, False, "ছবিটি অনেক দূর থেকে তোলা হয়েছে (Face is too far away). দূর থেকে তোলা ছবিতে চোখের রেজোলিউশন অত্যন্ত কম থাকায় জন্ডিস পরীক্ষা করা যায় না। অনুগ্রহ করে ক্যামেরার একদম কাছে এসে চোখের স্পষ্ট ছবি তুলুন।"
             
         # Upper face zone where eyes sit (18% to 58% down the face)
         eye_zone_y1 = max(0, fy + int(fh * 0.18))
@@ -166,30 +167,40 @@ def process_and_extract_eye(im_pil):
         if len(eyes) == 0:
             eyes = eye_tree_cascade.detectMultiScale(eye_zone_gray, scaleFactor=1.1, minNeighbors=2)
             
-        if len(eyes) > 0:
-            ex, ey, ew, eh = sorted(eyes, key=lambda e: e[2]*e[3], reverse=True)[0]
-            pad_x = int(ew * 0.28)
-            pad_y = int(eh * 0.28)
-            crop_y1 = max(0, eye_zone_y1 + ey - pad_y)
-            crop_y2 = min(h_orig, eye_zone_y1 + ey + eh + pad_y)
-            crop_x1 = max(0, eye_zone_x1 + ex - pad_x)
-            crop_x2 = min(w_orig, eye_zone_x1 + ex + ew + pad_x)
-            cropped_eye = im_rgb.crop((crop_x1, crop_y1, crop_x2, crop_y2))
-        else:
-            cropped_eye = im_rgb.crop((eye_zone_x1, eye_zone_y1, eye_zone_x2, eye_zone_y2))
+        if len(eyes) == 0:
+            return None, False, "মুখমণ্ডলে কোনো খোলা চোখ শনাক্ত করা যায়নি (No open eye detected). সরাসরি ক্যামেরার দিকে তাকিয়ে দুই চোখ খোলা রেখে ছবি তুলুন।"
             
-        # Check sclera visibility in cropped eye (detect dark sunglasses or closed eyes)
+        ex, ey, ew, eh = sorted(eyes, key=lambda e: e[2]*e[3], reverse=True)[0]
+        
+        # Eye must have sufficient resolution (at least 50x35 px)
+        if ew < 50 or eh < 35:
+            return None, False, f"চোখের রেজোলিউশন খুব কম ({ew}x{eh}px). চোখের স্ক্লেরা (সাদা অংশ) স্পষ্ট দেখতে কমপক্ষে ৫০ পিক্সেল রেজোলিউশন প্রয়োজন। ক্যামেরার আরো কাছে আসুন।"
+            
+        pad_x = int(ew * 0.25)
+        pad_y = int(eh * 0.25)
+        crop_y1 = max(0, eye_zone_y1 + ey - pad_y)
+        crop_y2 = min(h_orig, eye_zone_y1 + ey + eh + pad_y)
+        crop_x1 = max(0, eye_zone_x1 + ex - pad_x)
+        crop_x2 = min(w_orig, eye_zone_x1 + ex + ew + pad_x)
+        cropped_eye = im_rgb.crop((crop_x1, crop_y1, crop_x2, crop_y2))
+        
+        # Check sclera and iris visibility in cropped eye
         arr_eye = np.array(cropped_eye.resize((128, 128)), dtype=np.float32) / 255.0
         r, g, b = arr_eye[:,:,0], arr_eye[:,:,1], arr_eye[:,:,2]
         lum = 0.299*r + 0.587*g + 0.114*b
-        sclera_pixels = (lum >= 0.38) & ((r + g) - 2.0*b > -0.15)
         
-        if np.mean(sclera_pixels) < 0.06:
-            return cropped_eye, False, "No visible white sclera detected. Eyes may be closed or obscured by dark sunglasses. Clear sclera is required for jaundice screening."
+        # Dark iris/pupil must be present
+        if np.min(lum) > 0.35:
+            return cropped_eye, False, "চোখের মনি বা পিউপিল দৃশ্যমান নয়। সানগ্লাস পরা থাকলে তা খুলে সরাসরি ক্যামেরার দিকে তাকিয়ে ছবি তুলুন।"
             
-        return cropped_eye, True, "Full face detected. Automatically zoomed and cropped into the eye!"
+        # Sclera must be visible (bright pixels must be present)
+        bright_mask = lum >= 0.45
+        if np.sum(bright_mask) < 25:
+            return cropped_eye, False, "চোখের স্ক্লেরা (সাদা অংশ) স্পষ্ট দেখা যাচ্ছে না। চোখ পুরোপুরি উন্মুক্ত রেখে ছবি তুলুন।"
+            
+        return cropped_eye, True, "Full face verified. Automatically zoomed and cropped into the eye!"
         
-    # Check if already a close-up eye
+    # Check if already a close-up eye macro
     eyes1 = eye_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3)
     eyes2 = eye_tree_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3)
     
@@ -201,7 +212,7 @@ def process_and_extract_eye(im_pil):
     if (len(eyes1) > 0 or len(eyes2) > 0) and is_warm:
         return im_rgb, True, "Close-up human eye verified."
         
-    return None, False, "No human eye or face detected. Non-eye objects (shoes, clothing, cars, animals, landscapes) are strictly rejected."
+    return None, False, "কোনো মানুষের চোখ বা মুখমণ্ডল পাওয়া যায়নি। জুতা, কাপড়, গাছপালা, পশু বা দূরবর্তী প্রাকৃতিক ছবি বাতিল করা হয়েছে।"
 
 def extract_features_from_pil(im):
     im_rgb = im.convert("RGB")
@@ -393,14 +404,26 @@ if selected_image is not None:
                 probabilities = model.predict_proba(feats)[0]
                 healthy_prob = float(probabilities[0])
                 jaundice_prob = float(probabilities[1])
-                predicted_class = 1 if jaundice_prob >= 0.50 else 0
                 
-                if predicted_class == 1:
+                # Clinical screening thresholding:
+                # >= 55%: Positive for Jaundice (Scleral Icterus)
+                # 45% - 55%: Borderline / Inconclusive due to ambient lighting
+                # < 45%: Negative (Normal Healthy Sclera)
+                if jaundice_prob >= 0.55:
+                    predicted_status = "POSITIVE"
                     st.markdown(
                         """<div style="margin: 15px 0;"><span class="badge-jaundice">⚠️ POSITIVE: Scleral Icterus (Jaundice) Detected</span></div>""",
                         unsafe_allow_html=True
                     )
+                elif jaundice_prob >= 0.45:
+                    predicted_status = "BORDERLINE"
+                    st.markdown(
+                        """<div style="margin: 15px 0;"><span style="background-color: #fff3cd; color: #856404; padding: 10px 18px; border-radius: 20px; font-weight: bold; font-size: 1.15rem; display: inline-block; border: 2px solid #ffeeba;">⚡ BORDERLINE / INCONCLUSIVE (অস্পষ্ট / পুনরায় পরীক্ষা আবশ্যক)</span></div>""",
+                        unsafe_allow_html=True
+                    )
+                    st.info("💡 পরিবেষ্টিত আলোকস্বল্পতা বা ঘরের হলুদাভ আলোর কারণে ফলাফল স্পষ্ট নয়। নিশ্চিত হওয়ার জন্য পর্যাপ্ত প্রাকৃতিক আলোতে ক্যামেরার কাছে এসে পুনরায় ছবি তুলুন।")
                 else:
+                    predicted_status = "NEGATIVE"
                     st.markdown(
                         """<div style="margin: 15px 0;"><span class="badge-healthy">✅ NEGATIVE: Normal Sclera (Healthy)</span></div>""",
                         unsafe_allow_html=True
@@ -412,6 +435,10 @@ if selected_image is not None:
                 c2.metric("Healthy Baseline Probability", f"{healthy_prob * 100:.1f}%")
                 
                 st.progress(float(jaundice_prob), text=f"Jaundice Risk Index: {jaundice_prob*100:.1f}%")
+                
+                # Check for warm ambient lighting cast
+                if diag["b_mean"] < diag["r_mean"] - 0.22:
+                    st.warning("⚠️ **Lighting Alert (আলোক সতর্কবার্তা)**: ছবিতে ঘরের মৃদু বা হলুদাভ আলোর প্রভাব রয়েছে। জন্ডিসের সঠিক ফলাফলের জন্য নিরপেক্ষ দিনের আলোতে ছবি তোলার পরামর্শ দেওয়া হচ্ছে।")
                 
                 st.markdown("##### 📊 Colorimetric Chromaticity Indices")
                 m1, m2, m3 = st.columns(3)
@@ -426,11 +453,17 @@ if selected_image is not None:
                 st.bar_chart(color_df.set_index("Channel"), color="#f4d35e")
                 
                 st.markdown("##### 📋 Recommended Clinical Next Steps")
-                if predicted_class == 1:
+                if predicted_status == "POSITIVE":
                     st.warning("""
                     - **Serum Bilirubin Test (TSB)**: Prompt laboratory blood test (Total, Direct, and Indirect Bilirubin).
                     - **Liver Function Panel (LFT)**: ALT, AST, ALP, and Albumin check.
                     - **Consultation**: Please consult a Physician or Hepatologist for confirmation and medical intervention.
+                    """)
+                elif predicted_status == "BORDERLINE":
+                    st.warning("""
+                    - **Retake Photo**: Capture a macro photo of the eye under neutral daylight or with camera flash.
+                    - **Observe Symptoms**: Check if urine is dark or if skin looks yellow.
+                    - If symptoms persist or liver disorder is suspected, consult a healthcare provider.
                     """)
                 else:
                     st.success("""
