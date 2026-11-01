@@ -1,6 +1,7 @@
 import os
 import io
 import joblib
+import cv2
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageOps
@@ -113,59 +114,50 @@ def load_classifier():
 
 model = load_classifier()
 
+@st.cache_resource
+def load_cascades():
+    eye_c = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye.xml")
+    eye_tree_c = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye_tree_eyeglasses.xml")
+    face_c = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    return eye_c, eye_tree_c, face_c
+
+eye_cascade, eye_tree_cascade, face_cascade = load_cascades()
+
 def verify_eye_image(im):
     """
-    Biological and anatomical gatekeeper to verify whether the image is actually a human eye.
-    Rejects shoes, clothes, cars, random objects, and non-eye surfaces.
+    OpenCV Cascade + Biological Verification Gate.
+    Verifies human eye presence and strictly rejects shoes, clothing, furniture, cars, objects.
     """
-    im_rgb = im.convert("RGB").resize((128, 128))
-    arr = np.array(im_rgb, dtype=np.float32) / 255.0
-    r, g, b = arr[:,:,0], arr[:,:,1], arr[:,:,2]
-    lum = 0.299*r + 0.587*g + 0.114*b
-    h, w = lum.shape
-
+    im_rgb = im.convert("RGB")
+    arr = np.array(im_rgb)
+    
     # 1. Biological Palette Check (Human skin & eye tissue is warm; R > B on average)
-    if np.mean(b) > np.mean(r) + 0.10:
+    arr_f = arr.astype(np.float32) / 255.0
+    r, g, b = arr_f[:,:,0], arr_f[:,:,1], arr_f[:,:,2]
+    if np.mean(b) > np.mean(r) + 0.12:
         return False, "Unnatural non-biological colors (predominantly blue/cool tones). Not a human eye."
-    if np.mean(g) > np.mean(r) + 0.15:
+    if np.mean(g) > np.mean(r) + 0.18:
         return False, "Unnatural non-biological colors (predominantly green tones). Not a human eye."
-
-    # 2. Texture & Roughness Check (Smooth biological gradients vs high-frequency fabric/leather/noise)
-    diff_y = np.mean(np.abs(np.diff(lum, axis=0)))
-    diff_x = np.mean(np.abs(np.diff(lum, axis=1)))
-    roughness = (diff_y + diff_x) / 2.0
-    if roughness > 0.065:
-        return False, "High-frequency non-biological surface texture detected (fabric, leather, or noise). Not an eye."
-    if roughness < 0.006:
-        return False, "Featureless flat single-color surface (shoes, wall, or cloth). No eye anatomy found."
-
-    # 3. Dynamic Range Check (Eye has dark pupil/eyelashes and bright sclera)
-    p5 = np.percentile(lum, 5)
-    p95 = np.percentile(lum, 95)
-    dyn_range = p95 - p5
-    if dyn_range < 0.20:
-        return False, "Image lacks the contrast of an eye (no dark pupil or bright sclera found)."
-
-    # 4. Pupil/Iris Detection in Central Region
-    center_roi = lum[int(h*0.20):int(h*0.80), int(w*0.15):int(w*0.85)]
-    min_center = np.min(center_roi)
-    if min_center > 0.45:
-        return False, "No dark pupil or iris found in the central region."
-
-    # 5. Sclera Candidate Check (White/ivory/yellow tissue with moderate saturation)
-    hsv = np.array(im_rgb.convert("HSV"), dtype=np.float32)
-    sat = hsv[:,:,1] / 255.0
-    sclera_mask = (lum >= 0.35) & (sat <= 0.85)
-    sclera_ratio = np.mean(sclera_mask)
-    if sclera_ratio < 0.06:
-        return False, "No scleral (white-of-the-eye) tissue identified."
-
-    # 6. Sclera-to-Iris Contrast
-    sclera_brightness = np.mean(lum[sclera_mask])
-    if sclera_brightness - min_center < 0.16:
-        return False, "Insufficient contrast between iris and sclera."
-
-    return True, "Valid human eye detected."
+        
+    # 2. OpenCV Haar Cascades for Biometric Eye & Face Detection
+    gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+    eyes1 = eye_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3)
+    eyes2 = eye_tree_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3)
+    
+    total_detections = len(eyes1) + len(eyes2) + len(faces)
+    
+    # 3. Fallback for tight sclera macro crops
+    if total_detections == 0:
+        h, w = gray.shape
+        if h > 80 and w > 80:
+            crop = gray[int(h*0.1):int(h*0.9), int(w*0.1):int(w*0.9)]
+            e_crop = eye_cascade.detectMultiScale(crop, scaleFactor=1.05, minNeighbors=2)
+            if len(e_crop) > 0:
+                return True, "Valid human eye confirmed."
+        return False, "No human eye or face detected (OpenCV biometric scan found 0 eyes). Please upload a clear photo of an eye."
+        
+    return True, "Valid human eye confirmed."
 
 def extract_features_from_pil(im):
     im_rgb = im.convert("RGB")
